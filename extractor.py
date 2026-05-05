@@ -2,36 +2,69 @@ from io import BytesIO
 
 import pdfplumber
 
-PRODUCT_NAMES = [
-    "PRELOSAS",
-    "PREVIGAS",
-    "FRISOS",
-    "COLGAJOS",
-    "MUROS WC",
-    "MUROS ALVEOLARES",
-    "MUROS DOPPEL",
-    "MUROS SOLIDOS",
-    "MUROS NEW JERSEY",
-    "ESPECIALES (FACHADA)",
-    "ESPECIALES (COLUMNETAS)",
-    "ESPECIALES (PRELOSAS)",
-    "ESCALERAS COMPLETAS",
-]
-
-DISPLAY_NAMES = {
-    "PRELOSAS": "Prelosa",
-    "PREVIGAS": "Previga",
-    "FRISOS": "Friso",
-    "COLGAJOS": "Colgajo",
-    "MUROS WC": "Muro WC",
-    "MUROS ALVEOLARES": "Muro Alveolar",
-    "MUROS DOPPEL": "Muro Doppel",
-    "MUROS SOLIDOS": "Muro Solido",
-    "MUROS NEW JERSEY": "Muro New Jersey",
-    "ESPECIALES (FACHADA)": "Especial Fachada",
-    "ESPECIALES (COLUMNETAS)": "Especial Columneta",
-    "ESPECIALES (PRELOSAS)": "Especial Prelosa",
-    "ESCALERAS COMPLETAS": "Escalera Completa",
+DISPLAY_NAMES: dict[str, list[str]] = {
+    "PRELOSAS": [
+        "Aligerada 1D 25cm (A=15) (T) (C=38)",
+        "Aligerada 2D 25cm",
+        "Maciza 25cm",
+        "Maciza 30cm (T) (C=38)",
+        "Maciza 30cm Postensada",
+        "Aligerada 1D 25cm Postensada",
+    ],
+    "PREVIGAS": [
+        "Vigas H <= 0.70m (C=35)",
+        "Vigas 0.70m < H <= 1.20m",
+        "Vigas 1.20m < H <= 2.00m",
+        "Viga E1-ANG",
+        "Viga E2-ANG",
+        "Viga E3-ANG",
+    ],
+    "FRISOS": [
+        "Friso H=20cm (e=15)",
+        "Friso H=30cm",
+        "Friso H=50cm",
+        "Friso E1-ANG",
+    ],
+    "COLGAJOS": [
+        "Colgajo H=20cm (e=12)",
+        "Colgajo H=30cm",
+        "Colgajo E1-ANG",
+    ],
+    "MUROS WC": [
+        "Muros WC (C=38)",
+    ],
+    "MUROS ALVEOLARES": [
+        "Muro Alveolar e=20cm",
+        "Muro Alveolar e=30cm",
+    ],
+    "MUROS DOPPEL": [
+        "Muro Doppel e=20cm",
+        "Muro Doppel e=30cm",
+    ],
+    "MUROS SOLIDOS": [
+        "Muro Sólido e=20cm",
+        "Muro Sólido e=30cm",
+    ],
+    "MUROS NEW JERSEY": [
+        "New Jersey T1-ANG",
+        "New Jersey T2-ANG",
+    ],
+    "ESPECIALES (FACHADA)": [
+        "Fachada E1-ANG",
+        "Fachada E2-ANG",
+    ],
+    "ESPECIALES (COLUMNETAS)": [
+        "Columneta T1-ANG",
+        "Columneta T2-ANG",
+    ],
+    "ESPECIALES (PRELOSAS)": [
+        "Maciza Especial e=7cm-ANG",
+    ],
+    "ESCALERAS COMPLETAS": [
+        "Escalera Tipo I-ANG",
+        "Escalera Tipo 12-ANG",
+        "Escalera Tipo A-ANG",
+    ],
 }
 
 
@@ -43,19 +76,30 @@ def extract_text_and_tables(file_bytes: bytes) -> tuple[str, list[list[list[str]
             text_parts.append(page.extract_text() or "")
             for table in page.extract_tables() or []:
                 tables.append(table)
-    return "\n".join(text_parts), tables
+    extract = "\n".join(text_parts)
+    print(extract)
+    return extract, tables
 
-
-def product_extract(text: str) -> list[str]:
-    text_upper = text.upper()
-    work = text_upper
-    found: set[str] = set()
-    for name in sorted(PRODUCT_NAMES, key=len, reverse=True):
-        if name in work:
-            found.add(name)
-            work = work.replace(name, " " * len(name))
-    return [name for name in PRODUCT_NAMES if name in found]
-
+def debug_print_tables(tables_by_page: list):
+    print("\n" + "="*50)
+    print("DEBUG: IMPRIMIENDO TABLAS EXTRAÍDAS")
+    print("="*50)
+    
+    for page_num, page_tables in enumerate(tables_by_page, start=1):
+        print(f"\n--- PÁGINA {page_num} ---")
+        if not page_tables:
+            print("No se encontraron tablas en esta página.")
+            continue
+            
+        for table_idx, table in enumerate(page_tables, start=1):
+            print(f"\nTabla {table_idx}:")
+            print("-" * 30)
+            for row in table:
+                # Filtramos None para que no rompa el join y limpiamos espacios
+                clean_row = [str(cell if cell is not None else "") .strip() for cell in row]
+                print(" | ".join(clean_row))
+            print("-" * 30)
+    print("\n" + "="*50)
 
 def extract_divisiones(text: str, tables: list[list[list[str]]], producto: str) -> dict:
     """
@@ -73,13 +117,12 @@ def extract_divisiones(text: str, tables: list[list[list[str]]], producto: str) 
     return {}
 
 
-def process_pdf(file_bytes: bytes) -> dict:
+def process_pdf(file_bytes: bytes, product: str) -> dict:
+    print(f"Processing PDF for product: {product}")
     text, tables = extract_text_and_tables(file_bytes)
-    productos = product_extract(text)
 
-    result: dict[str, list[dict]] = {}
-    for producto in productos:
-        display = DISPLAY_NAMES.get(producto, producto.title())
-        divisiones = extract_divisiones(text, tables, producto)
-        result[display] = [{"Divisiones": divisiones}]
-    return result
+    entry: dict = {}
+    if len(tables) > 1:
+        entry["Divisiones"] = extract_divisiones(text, tables, product)
+
+    return {product: [entry]}

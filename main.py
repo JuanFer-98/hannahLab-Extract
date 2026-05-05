@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form 
 
 from extractor import process_pdf
 
@@ -12,7 +12,7 @@ def root():
 
 
 @app.post("/extract")
-async def extract(file: UploadFile = File(...)):
+async def extract(product:  str = Form(...), file: UploadFile = File(...)):
     if file.content_type != "application/pdf" and not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="The file must be a PDF.")
 
@@ -21,7 +21,7 @@ async def extract(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Empty file.")
 
     try:
-        result = process_pdf(file_bytes)
+        result = process_pdf(file_bytes, product) 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
 

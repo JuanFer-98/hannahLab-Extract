@@ -106,5 +106,6 @@ def process_pdf(file_bytes: bytes, product: str) -> dict:
         handler = PRODUCT_HANDLERS.get(product)
         if handler is not None:
             entry["Divisiones"] = handler(text, tables)
-
+    entry["subtotales"] = "funcion a llamar segun producto"
+    entry["totales"] = "funcion a llamar segun el total"
     return {product: [entry]}

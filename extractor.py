@@ -1,5 +1,5 @@
 from io import BytesIO
-from typing import Callable
+from types import ModuleType
 
 import pdfplumber
 
@@ -70,13 +70,14 @@ DISPLAY_NAMES: dict[str, list[str]] = {
     ],
 }
 
-# Cada handler firma: (text, tables) -> dict (estructura de divisiones)
-DivisionesHandler = Callable[[str, list[list[list[str]]]], dict]
-
-PRODUCT_HANDLERS: dict[str, DivisionesHandler] = {
-    "PRELOSAS": prelosas.extract_divisiones,
-    # "PREVIGAS":  previgas.extract_divisiones,
-    # "FRISOS":    frisos.extract_divisiones,
+# Cada handler es un módulo de PRODUCTOS/ que expone:
+#   extract_divisiones(text, tables) -> dict
+#   extract_subtotales_disgregados(text, tables) -> dict[str, str]
+#   calcular_total(subtotales) -> str
+PRODUCT_HANDLERS: dict[str, ModuleType] = {
+    "PRELOSAS": prelosas,
+    # "PREVIGAS": previgas,
+    # "FRISOS":   frisos,
     # ... agrega aquí cada nuevo producto
 }
 
@@ -102,10 +103,11 @@ def process_pdf(file_bytes: bytes, product: str) -> dict:
     text, tables = extract_text_and_tables(file_bytes)
 
     entry: dict = {}
-    if len(tables) > 1:
-        handler = PRODUCT_HANDLERS.get(product)
-        if handler is not None:
-            entry["Divisiones"] = handler(text, tables)
-    entry["subtotales"] = "funcion a llamar segun producto"
-    entry["totales"] = "funcion a llamar segun el total"
+    handler = PRODUCT_HANDLERS.get(product)
+    if handler is not None:
+        if len(tables) > 1:
+            entry["Divisiones"] = handler.extract_divisiones(text, tables)
+        entry["subtotales_disgregados"] = handler.extract_subtotales_disgregados(text, tables)
+        entry["total"] = handler.calcular_total(entry["subtotales_disgregados"])
+
     return {product: [entry]}

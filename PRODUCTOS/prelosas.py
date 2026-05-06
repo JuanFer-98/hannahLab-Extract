@@ -107,3 +107,41 @@ def extract_divisiones(text: str, tables: list[list[list[str]]]) -> dict:
             divisiones[div_name] = niveles
             print(f"  [{idx}] -> division '{div_name}': {len(niveles)} niveles")
     return divisiones
+
+
+def _parse_subtotal_row(table: list[list]) -> dict[str, str]:
+    """Localiza la fila 'SubTotal' de una tabla y devuelve {columna: valor_str}."""
+    for row in table:
+        if not row:
+            continue
+        first = str(row[0] or "").strip().upper()
+        if first.startswith("SUBTOTAL"):
+            result: dict[str, str] = {}
+            for col_idx, col_name in enumerate(LOSA_COLUMNS, start=1):
+                if col_idx < len(row):
+                    val = str(row[col_idx] or "0.00").strip().replace(" ", "")
+                    result[col_name] = val
+            return result
+    return {}
+
+
+def extract_subtotales_disgregados(text: str, tables: list[list[list[str]]]) -> dict[str, str]:
+    """Encuentra la tabla RESUMEN y devuelve sus subtotales por columna."""
+    for table in tables:
+        if not _is_metrado_table(table):
+            continue
+        if _get_division_name(table) != "RESUMEN":
+            continue
+        return _parse_subtotal_row(table)
+    return {}
+
+
+def calcular_total(subtotales: dict[str, str]) -> str:
+    """Suma los valores numéricos del dict de subtotales y formatea con 2 decimales."""
+    total = 0.0
+    for val in subtotales.values():
+        try:
+            total += float(val)
+        except (ValueError, TypeError):
+            continue
+    return f"{total:.2f}"

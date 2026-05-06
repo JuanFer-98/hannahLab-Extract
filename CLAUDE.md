@@ -33,7 +33,8 @@ Las reglas de extracción de divisiones **se construyen incrementalmente**: el u
 - **`DISPLAY_NAMES = dict[str, list[str]]`**: el catálogo. Cada key es uno de los 13 productos válidos; el value es la lista de nomenclaturas/subproductos esperados en el PDF de ese producto (sacadas de la tabla original con columna NOMENCLATURA GENERAL). Lo usa `extract_divisiones` para saber qué columnas buscar en las tablas. **No es un display name al estilo "Prelosa singular"** — el nombre se mantiene por compatibilidad, pero la semántica es "subproductos del producto".
 - **Top-level key del JSON = `product` literal**: el dict resultado se construye `{product: [...]}` con el string que llega del input, sin transformación. No hay traducción a singular.
 - **Conditional `Divisiones`**: se inserta solo si `len(tables) > 1`. Si el PDF tiene 0 o 1 tablas, el resultado es `{product: [{}]}` (lista con objeto vacío). Si tiene >1, es `{product: [{"Divisiones": {...}}]}`.
-- **Un archivo por producto en `PRODUCTOS/` + dispatcher**: `extractor.py` es genérico (lectura de PDF + dispatch). Cada producto vive en `PRODUCTOS/<nombre>.py` y expone `extract_divisiones(text, tables) -> dict`. `extractor.PRODUCT_HANDLERS` es el dict que mapea `"PRELOSAS"` → `prelosas.extract_divisiones`. Para añadir un producto: (1) crear `PRODUCTOS/<nuevo>.py`, (2) importarlo en `extractor.py`, (3) agregar una línea al dict.
+- **Un archivo por producto en `PRODUCTOS/` + dispatcher**: `extractor.py` es genérico (lectura de PDF + dispatch). Cada producto vive en `PRODUCTOS/<nombre>.py` y expone **3 funciones**: `extract_divisiones(text, tables)`, `extract_subtotales_disgregados(text, tables)`, `calcular_total(subtotales)`. `extractor.PRODUCT_HANDLERS` mapea `"PRELOSAS"` → **el módulo entero** (no a una función), así `process_pdf` invoca las 3 con `handler.<nombre>`. Para añadir un producto: (1) crear `PRODUCTOS/<nuevo>.py` con las 3 funciones, (2) importarlo en `extractor.py`, (3) agregar una línea al dict.
+- **Detección de tablas — NO es por nombre**: `pdfplumber` no expone "nombres de tabla". La clasificación es por contenido en 2 niveles (en `PRODUCTOS/prelosas.py`): nivel 1 `_is_metrado_table` (header tiene `NIVEL` + `COSTO`), nivel 2 `_get_division_name` (filas de datos contienen `CISTERNA`/`SÓTANO` → SOTANOS, `TORRE A` + `TORRE B` → RESUMEN, `PISO` con conteo >15 → TORRE_A, ≤15 → TORRE_B).
 - **Carpeta `PRODUCTOS` en MAYÚSCULAS**: el usuario lo eligió así. Python conserva la diferencia mayúscula/minúscula en imports aunque Windows tenga FS case-insensitive — el import literal es `import PRODUCTOS.prelosas as prelosas`.
 - **Validación temprana de `product`**: `process_pdf` lanza `ValueError` si `product` no es key de `DISPLAY_NAMES`. `main.py` lo traduce a 400. Así se rechaza antes de leer el PDF.
 - **Reglas incrementales**: cuando un producto aún no tenga handler en `PRODUCT_HANDLERS`, el `Divisiones` queda `{}` aunque haya tablas. Se va llenando producto por producto.
@@ -49,7 +50,7 @@ python main.py
 
 Swagger UI: http://127.0.0.1:8080/docs
 
-## Forma del JSON de respuesta (objetivo)
+## Forma del JSON de respuesta
 
 Input: `product=PRELOSAS` y un PDF con varias tablas.
 
@@ -58,40 +59,56 @@ Input: `product=PRELOSAS` y un PDF con varias tablas.
   "PRELOSAS": [
     {
       "Divisiones": {
-        "TORRE1": {
-          "CISTERNA": {
-            "Aligerada 1D 25cm (A=15) (T) (C=38)": "0.00",
-            "Aligerada 2D 25cm": "0.00"
-            // … resto de subproductos de DISPLAY_NAMES["PRELOSAS"]
-          }
-          // … más niveles
-        }
-        // … más divisiones (TORRE2, SOTANOS, …)
-      }
+        "SOTANOS": {
+          "CISTERNA": {"ALIGERADA 15cm": "0.00", ..., "MACIZA": "247.49", ...},
+          "SÓTANO 6": {...}
+          // ...
+        },
+        "TORRE_A": { "PISO 1": {...}, ..., "AZOTEA": {...} },
+        "TORRE_B": { "PISO 1": {...}, ..., "AZOTEA": {...} }
+      },
+      "subtotales_disgregados": {
+        "ALIGERADA 15cm": "258.86",
+        "ALIGERADA 17cm": "1003.37",
+        "ALIGERADA 20cm": "8532.12",
+        "ALIGERADA 23cm": "1273.02",
+        "ALIGERADA 25cm": "596.27",
+        "MACIZA": "3913.86",
+        "ALIGERADA 20cm 2 Direcciones": "3031.24",
+        "ALIGERADA 25cm 2 Direcciones": "563.45"
+      },
+      "total": "19172.19"
     }
   ]
 }
 ```
 
-Si `len(tables) <= 1`, el `entry` es `{}` y queda `{"PRELOSAS": [{}]}`.
-
-Hoy `Divisiones` viene `{}` aunque haya tablas (porque la lógica de detección de divisiones/niveles aún no está implementada). Se irá llenando conforme el usuario aporte reglas.
+- `Divisiones` solo aparece cuando `len(tables) > 1`.
+- `subtotales_disgregados` y `total` siempre aparecen si el `product` tiene handler (vienen vacíos/`"0.00"` si no se encontró tabla `RESUMEN`).
 
 ## API pública
 
 ### `extractor.py` (genérico)
 - `DISPLAY_NAMES: dict[str, list[str]]` — catálogo de productos válidos y sus nomenclaturas.
-- `PRODUCT_HANDLERS: dict[str, DivisionesHandler]` — dispatcher producto → handler.
-- `DivisionesHandler` — alias de tipo: `Callable[[str, list[list[list[str]]]], dict]`.
+- `PRODUCT_HANDLERS: dict[str, ModuleType]` — dispatcher producto → módulo handler.
 - `extract_text_and_tables(file_bytes) -> (str, list[list[list[str]]])` — texto concatenado + lista plana de tablas.
-- `process_pdf(file_bytes, product) -> dict` — valida `product`, lee el PDF, si `len(tables) > 1` invoca `PRODUCT_HANDLERS[product]` para construir `Divisiones`. Devuelve `{product: [entry]}`. Lanza `ValueError` si `product` no es válido.
+- `process_pdf(file_bytes, product) -> dict` — valida `product`, lee el PDF, invoca el handler del producto. Llama `handler.extract_divisiones` (solo si `len(tables) > 1`), `handler.extract_subtotales_disgregados` y `handler.calcular_total`. Devuelve `{product: [entry]}`. Lanza `ValueError` si `product` no es válido.
+
+### Contrato de cada handler en `PRODUCTOS/`
+Cada módulo expone:
+- `extract_divisiones(text, tables) -> dict` — `{division: {nivel: {nomenclatura: valor_str}}}`.
+- `extract_subtotales_disgregados(text, tables) -> dict[str, str]` — `{nomenclatura: valor_str}` desde la tabla RESUMEN.
+- `calcular_total(subtotales: dict[str, str]) -> str` — suma los valores y devuelve string con 2 decimales.
 
 ### `PRODUCTOS/prelosas.py` (PRELOSAS)
-- `extract_divisiones(text, tables) -> dict` — implementación concreta para PRELOSAS. Detecta tablas con header `NIVEL...COSTO`, las clasifica con `_get_division_name` (SOTANOS / TORRE_A / TORRE_B / RESUMEN) y parsea las filas con `_parse_metrado_rows` usando `LOSA_COLUMNS`. **Validado** contra el PDF Pacific Soul: 7 niveles SOTANOS, 23 niveles TORRE_A (PISO 1..22 + AZOTEA), 10 niveles TORRE_B (PISO 1..9 + AZOTEA).
+- Detecta tablas con header `NIVEL...COSTO` y las clasifica con `_get_division_name` (SOTANOS / TORRE_A / TORRE_B / RESUMEN) usando heurísticas sobre las filas de datos.
+- `extract_divisiones` parsea filas con `_parse_metrado_rows` usando `LOSA_COLUMNS`.
+- `extract_subtotales_disgregados` busca la tabla RESUMEN y lee su fila `SubTotal`.
+- `calcular_total` suma los valores. **Validado** contra Pacific Soul: 7 niveles SOTANOS, 23 niveles TORRE_A, 10 niveles TORRE_B; subtotales correctos por columna; total = `19172.19` (suma de los 8 subtotales) coincide con el PDF.
 
 ### Cómo agregar un producto nuevo (ej. PREVIGAS)
-1. Crear `PRODUCTOS/previgas.py` con `def extract_divisiones(text, tables) -> dict`.
-2. En `extractor.py`, agregar `import PRODUCTOS.previgas as previgas` y la línea `"PREVIGAS": previgas.extract_divisiones` a `PRODUCT_HANDLERS`.
+1. Crear `PRODUCTOS/previgas.py` con las 3 funciones del contrato (firma idéntica a las de `prelosas.py`).
+2. En `extractor.py`, agregar `import PRODUCTOS.previgas as previgas` y la línea `"PREVIGAS": previgas` a `PRODUCT_HANDLERS`.
 3. Listo — `process_pdf` ya rutea automáticamente.
 
 ## TODOs / pendientes
@@ -116,3 +133,4 @@ Hoy `Divisiones` viene `{}` aunque haya tablas (porque la lógica de detección 
 - **2026-05-05** — Implementación inicial de PRELOSAS dentro de `extractor.py` (helpers `_flat`/`_is_metrado_table`/`_get_division_name`/`_parse_metrado_rows`, constantes `LOSA_COLUMNS`/`SKIP_NIVELES`, función `extract_divisiones`). Detección dinámica de tablas de metrados y clasificación en `SOTANOS`/`TORRE_A`/`TORRE_B`/`RESUMEN`. Archivo: `extractor.py`.
 - **2026-05-05** — **Refactor a un archivo por producto + dispatcher**. Movida toda la lógica de PRELOSAS a `prelosas.py` (helpers + `extract_divisiones(text, tables)`). `extractor.py` queda solo con código genérico: `pdfplumber`, `DISPLAY_NAMES`, `PRODUCT_HANDLERS` (dict producto → handler), `process_pdf` (valida `product`, lee PDF, delega al handler). Eliminado el duplicado de `extract_text_and_tables`. Validación de `product` desconocido lanza `ValueError` → `main.py` la traduce a HTTP 400. Para añadir producto nuevo basta crear el archivo y agregar 1 línea al `PRODUCT_HANDLERS`. Archivos: `extractor.py` (reescrito), `prelosas.py` (nuevo), `main.py` (catch `ValueError`).
 - **2026-05-05** — **Paquete `PRODUCTOS/`** (mayúsculas, según preferencia del usuario): movido `prelosas.py` a `PRODUCTOS/prelosas.py` con `__init__.py` vacío. Import en `extractor.py`: `import PRODUCTOS.prelosas as prelosas`. **Bug fix** en `prelosas._parse_metrado_rows`: `SKIP_NIVELES` contenía `""` y la condición `any(kw in nivel.upper() for kw in SKIP_NIVELES)` siempre era `True` (porque `"" in cualquier_string` es `True`), lo que hacía que se saltaran todas las filas y la función devolviera `{}`. Removido `""` del set; el chequeo `not nivel` ya cubre filas vacías. Validado con datos reales del PDF Pacific Soul: detecta correctamente SOTANOS (7), TORRE_A (23), TORRE_B (10). Archivos: `PRODUCTOS/__init__.py` (nuevo), `PRODUCTOS/prelosas.py` (movido + fix), `extractor.py` (import actualizado).
+- **2026-05-06** — **Subtotales disgregados + total**. Añadidas dos funciones a `PRODUCTOS/prelosas.py`: `extract_subtotales_disgregados(text, tables)` (busca la tabla `RESUMEN` con `_get_division_name`, lee su fila `SubTotal` y devuelve `{columna: valor_str}`) y `calcular_total(subtotales)` (suma los valores y formatea con 2 decimales). Helper privado `_parse_subtotal_row`. **`PRODUCT_HANDLERS` cambia su tipo** de `dict[str, Callable]` a `dict[str, ModuleType]` — ahora mapea producto → módulo entero, así `process_pdf` invoca `handler.extract_divisiones`, `handler.extract_subtotales_disgregados`, `handler.calcular_total` con la misma referencia. Reemplazados los placeholders `entry["subtotales_disgregados"]="tables"`/`entry["total"]="hola mundo"` por las llamadas reales. Validado contra Pacific Soul: total = `19172.19` (= 258.86 + 1003.37 + 8532.12 + 1273.02 + 596.27 + 3913.86 + 3031.24 + 563.45) coincide con el PDF. Archivos: `PRODUCTOS/prelosas.py`, `extractor.py`.

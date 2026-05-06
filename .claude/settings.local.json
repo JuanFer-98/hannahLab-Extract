@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($env:PYTHONHOME=$null; $env:PYTHONPATH=$null; & \".\\\\venv\\\\Scripts\\\\python.exe\" -c \"from main import app; from extractor import DISPLAY_NAMES, PRODUCT_HANDLERS, process_pdf; import prelosas; print\\('OK handlers=', list\\(PRODUCT_HANDLERS.keys\\(\\)\\), 'prelosas.extract_divisiones=', prelosas.extract_divisiones.__name__\\)\")"
+    ]
+  }
+}

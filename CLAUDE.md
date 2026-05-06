@@ -14,8 +14,12 @@ Las reglas de extracción de divisiones **se construyen incrementalmente**: el u
 
 ## Estructura de archivos
 
-- [main.py](main.py) — App FastAPI. Endpoint `POST /extract` (multipart, campos `file` + `product`). Arranca uvicorn en `127.0.0.1:8080`.
-- [extractor.py](extractor.py) — Lectura de PDF con **pdfplumber** (texto + tablas), catálogo `DISPLAY_NAMES` (producto → lista de nomenclaturas), construcción de divisiones, orquestación.
+- [main.py](main.py) — App FastAPI. Endpoint `POST /extract` (multipart, campos `file` + `product`). Arranca uvicorn en `127.0.0.1:8080`. Devuelve 400 si `product` no está en `DISPLAY_NAMES`.
+- [extractor.py](extractor.py) — Solo código **genérico**: `pdfplumber` para texto+tablas, `DISPLAY_NAMES` (catálogo), `PRODUCT_HANDLERS` (dispatcher), `process_pdf`. **No tiene lógica específica de ningún producto.**
+- [PRODUCTOS/](PRODUCTOS/) — Paquete con un módulo por producto. Import: `import PRODUCTOS.prelosas as prelosas`.
+  - [PRODUCTOS/__init__.py](PRODUCTOS/__init__.py) — Marker del paquete (vacío).
+  - [PRODUCTOS/prelosas.py](PRODUCTOS/prelosas.py) — Lógica específica de **PRELOSAS**: detecta tablas de metrados (header `NIVEL ... COSTO`), las clasifica en `SOTANOS`/`TORRE_A`/`TORRE_B`/`RESUMEN`, parsea filas y devuelve `{division: {nivel: {nomenclatura: valor_str}}}`.
+  - (Futuro) `PRODUCTOS/previgas.py`, `PRODUCTOS/frisos.py`, etc.
 - [requirements.txt](requirements.txt) — fastapi, uvicorn[standard], python-multipart, pdfplumber.
 - `venv/` — Entorno virtual Python 3.14.
 
@@ -29,7 +33,10 @@ Las reglas de extracción de divisiones **se construyen incrementalmente**: el u
 - **`DISPLAY_NAMES = dict[str, list[str]]`**: el catálogo. Cada key es uno de los 13 productos válidos; el value es la lista de nomenclaturas/subproductos esperados en el PDF de ese producto (sacadas de la tabla original con columna NOMENCLATURA GENERAL). Lo usa `extract_divisiones` para saber qué columnas buscar en las tablas. **No es un display name al estilo "Prelosa singular"** — el nombre se mantiene por compatibilidad, pero la semántica es "subproductos del producto".
 - **Top-level key del JSON = `product` literal**: el dict resultado se construye `{product: [...]}` con el string que llega del input, sin transformación. No hay traducción a singular.
 - **Conditional `Divisiones`**: se inserta solo si `len(tables) > 1`. Si el PDF tiene 0 o 1 tablas, el resultado es `{product: [{}]}` (lista con objeto vacío). Si tiene >1, es `{product: [{"Divisiones": {...}}]}`.
-- **Reglas incrementales**: `extract_divisiones` arranca como stub (`return {}`). Cada regla nueva del usuario se va agregando a esa función. El código que no aporta al objetivo actual se elimina (no se acumula código muerto).
+- **Un archivo por producto en `PRODUCTOS/` + dispatcher**: `extractor.py` es genérico (lectura de PDF + dispatch). Cada producto vive en `PRODUCTOS/<nombre>.py` y expone `extract_divisiones(text, tables) -> dict`. `extractor.PRODUCT_HANDLERS` es el dict que mapea `"PRELOSAS"` → `prelosas.extract_divisiones`. Para añadir un producto: (1) crear `PRODUCTOS/<nuevo>.py`, (2) importarlo en `extractor.py`, (3) agregar una línea al dict.
+- **Carpeta `PRODUCTOS` en MAYÚSCULAS**: el usuario lo eligió así. Python conserva la diferencia mayúscula/minúscula en imports aunque Windows tenga FS case-insensitive — el import literal es `import PRODUCTOS.prelosas as prelosas`.
+- **Validación temprana de `product`**: `process_pdf` lanza `ValueError` si `product` no es key de `DISPLAY_NAMES`. `main.py` lo traduce a 400. Así se rechaza antes de leer el PDF.
+- **Reglas incrementales**: cuando un producto aún no tenga handler en `PRODUCT_HANDLERS`, el `Divisiones` queda `{}` aunque haya tablas. Se va llenando producto por producto.
 - **Valores como string, no float**: el ejemplo del usuario muestra `"ALIGERADA 15cm": "0.00"` (entrecomillado). Los metrados se conservan como string para preservar el formato original del PDF.
 
 ## Cómo correr
@@ -70,19 +77,29 @@ Si `len(tables) <= 1`, el `entry` es `{}` y queda `{"PRELOSAS": [{}]}`.
 
 Hoy `Divisiones` viene `{}` aunque haya tablas (porque la lógica de detección de divisiones/niveles aún no está implementada). Se irá llenando conforme el usuario aporte reglas.
 
-## Funciones públicas de `extractor.py`
+## API pública
 
-- `extract_text_and_tables(file_bytes) -> (str, list[list[list[str]]])` — texto concatenado de todas las páginas + lista plana de tablas (cada tabla = lista de filas, cada fila = lista de celdas).
-- `debug_print_tables(tables_by_page)` — helper de debug para imprimir las tablas en consola. (Nota: asume estructura por página; si se llama con la lista plana de `extract_text_and_tables`, la salida puede no agruparse bien.)
-- `extract_divisiones(text, tables, producto) -> dict` — **stub**. Construye `{"TORRE1": {"CISTERNA": {"Aligerada 1D 25cm (A=15) (T) (C=38)": "0.00", …}, …}, …}` usando las nomenclaturas de `DISPLAY_NAMES[producto]`. Pendiente de reglas del usuario.
-- `process_pdf(file_bytes, product) -> dict` — orquesta todo. Lee el PDF, y si hay >1 tabla incluye `Divisiones`. Devuelve `{product: [entry]}`.
+### `extractor.py` (genérico)
+- `DISPLAY_NAMES: dict[str, list[str]]` — catálogo de productos válidos y sus nomenclaturas.
+- `PRODUCT_HANDLERS: dict[str, DivisionesHandler]` — dispatcher producto → handler.
+- `DivisionesHandler` — alias de tipo: `Callable[[str, list[list[list[str]]]], dict]`.
+- `extract_text_and_tables(file_bytes) -> (str, list[list[list[str]]])` — texto concatenado + lista plana de tablas.
+- `process_pdf(file_bytes, product) -> dict` — valida `product`, lee el PDF, si `len(tables) > 1` invoca `PRODUCT_HANDLERS[product]` para construir `Divisiones`. Devuelve `{product: [entry]}`. Lanza `ValueError` si `product` no es válido.
+
+### `PRODUCTOS/prelosas.py` (PRELOSAS)
+- `extract_divisiones(text, tables) -> dict` — implementación concreta para PRELOSAS. Detecta tablas con header `NIVEL...COSTO`, las clasifica con `_get_division_name` (SOTANOS / TORRE_A / TORRE_B / RESUMEN) y parsea las filas con `_parse_metrado_rows` usando `LOSA_COLUMNS`. **Validado** contra el PDF Pacific Soul: 7 niveles SOTANOS, 23 niveles TORRE_A (PISO 1..22 + AZOTEA), 10 niveles TORRE_B (PISO 1..9 + AZOTEA).
+
+### Cómo agregar un producto nuevo (ej. PREVIGAS)
+1. Crear `PRODUCTOS/previgas.py` con `def extract_divisiones(text, tables) -> dict`.
+2. En `extractor.py`, agregar `import PRODUCTOS.previgas as previgas` y la línea `"PREVIGAS": previgas.extract_divisiones` a `PRODUCT_HANDLERS`.
+3. Listo — `process_pdf` ya rutea automáticamente.
 
 ## TODOs / pendientes
 
-- [ ] Implementar `extract_divisiones` conforme el usuario aporte reglas para cada división (TORRE1, TORRE2, SOTANOS…) y nivel (CISTERNA, SOTANO 6, PISO 1…). El stub ya recibe `producto`, así que puede consultar `DISPLAY_NAMES[producto]` para saber qué columnas extraer de las tablas.
-- [ ] Definir si la lista al lado del producto (`"PRELOSAS": [...]`) puede tener más de un elemento (ej. múltiples instancias/cotizaciones del mismo producto en un solo PDF) o siempre será de longitud 1.
-- [ ] Validar el `product` recibido contra los keys de `DISPLAY_NAMES` y devolver 400 si no es válido (hoy se acepta cualquier string).
-- [ ] Decidir si `debug_print_tables` debe ajustar su firma a la lista plana actual o si `extract_text_and_tables` debe pasar a devolver tablas agrupadas por página.
+- [ ] Implementar handlers para los productos restantes (`previgas.py`, `frisos.py`, etc.) conforme el usuario aporte sus reglas.
+- [ ] Mejorar la heurística `TORRE_A` vs `TORRE_B` en `prelosas._get_division_name`: hoy distingue por número de pisos (>15 vs ≤15), lo que falla en proyectos con torres balanceadas. Idealmente identificar por encabezado/título de la tabla.
+- [ ] Mapear las columnas detectadas en el PDF (`ALIGERADA 15cm`, `MACIZA`, …) a las nomenclaturas oficiales del catálogo `DISPLAY_NAMES["PRELOSAS"]` (`Aligerada 1D 25cm (A=15) (T) (C=38)`, …) — hoy son strings distintos y no se cruzan.
+- [ ] Definir si la lista al lado del producto (`"PRELOSAS": [...]`) puede tener más de un elemento (múltiples instancias del mismo producto en un solo PDF) o siempre será de longitud 1.
 
 ## Historial de mejoras
 
@@ -96,3 +113,6 @@ Hoy `Divisiones` viene `{}` aunque haya tablas (porque la lógica de detección 
 - **2026-05-05** — **Cambio de motor de extracción**: `pypdf` → `pdfplumber` (para leer tablas estructuradas, no solo texto plano). Reescrita `extractor.py` enfocada al nuevo objetivo: `process_pdf` ahora devuelve `{"producto": str|None, "bloques": {}}`. **Eliminados** por ya no aportar: `classifier.py` (clasificador con identificadores `[MZ]/[PV70C35]/...`), funciones `apply_rules`/`extract_metadata`/`extract_financial_summary` y sus regex (emails, teléfonos, dinero, metadata del cliente). `extract_bloques` queda como stub a la espera de reglas. Archivos modificados: `extractor.py`, `requirements.txt`. Eliminados: `classifier.py`.
 - **2026-05-05** — Cambio de forma del JSON de salida a `{<DisplayProducto>: [{"Divisiones": {<DIV>: {<NIVEL>: {<NOMENC>: "<valor_str>"}}}}]}`. Renombrada `extract_bloques` → `extract_divisiones(text, tables, producto)` (sigue como stub). Añadido `DISPLAY_NAMES` con la traducción por producto (`PRELOSAS → Prelosa`, etc., 13 entradas). `process_pdf` itera todos los productos detectados y arma el dict resultado (multi-producto soportado nativamente). Archivo: `extractor.py`.
 - **2026-05-05** — `product` pasa a ser **input del endpoint** (form field `product` en `/extract`, junto al `file`). `process_pdf(file_bytes, product)` toma el producto literalmente, sin detectarlo del texto. **`DISPLAY_NAMES` reestructurado** de `dict[str, str]` (display singular) a `dict[str, list[str]]` (lista de subproductos/nomenclaturas por producto, con las 13 familias y sus nomenclaturas tomadas del catálogo original). **`Divisiones` condicional**: solo se inserta cuando `len(tables) > 1`. Top-level key del JSON pasa a ser el `product` recibido literalmente. **Eliminados** por código no usado: `PRODUCT_NAMES`, `product_extract`. Archivos: `extractor.py`, `main.py`.
+- **2026-05-05** — Implementación inicial de PRELOSAS dentro de `extractor.py` (helpers `_flat`/`_is_metrado_table`/`_get_division_name`/`_parse_metrado_rows`, constantes `LOSA_COLUMNS`/`SKIP_NIVELES`, función `extract_divisiones`). Detección dinámica de tablas de metrados y clasificación en `SOTANOS`/`TORRE_A`/`TORRE_B`/`RESUMEN`. Archivo: `extractor.py`.
+- **2026-05-05** — **Refactor a un archivo por producto + dispatcher**. Movida toda la lógica de PRELOSAS a `prelosas.py` (helpers + `extract_divisiones(text, tables)`). `extractor.py` queda solo con código genérico: `pdfplumber`, `DISPLAY_NAMES`, `PRODUCT_HANDLERS` (dict producto → handler), `process_pdf` (valida `product`, lee PDF, delega al handler). Eliminado el duplicado de `extract_text_and_tables`. Validación de `product` desconocido lanza `ValueError` → `main.py` la traduce a HTTP 400. Para añadir producto nuevo basta crear el archivo y agregar 1 línea al `PRODUCT_HANDLERS`. Archivos: `extractor.py` (reescrito), `prelosas.py` (nuevo), `main.py` (catch `ValueError`).
+- **2026-05-05** — **Paquete `PRODUCTOS/`** (mayúsculas, según preferencia del usuario): movido `prelosas.py` a `PRODUCTOS/prelosas.py` con `__init__.py` vacío. Import en `extractor.py`: `import PRODUCTOS.prelosas as prelosas`. **Bug fix** en `prelosas._parse_metrado_rows`: `SKIP_NIVELES` contenía `""` y la condición `any(kw in nivel.upper() for kw in SKIP_NIVELES)` siempre era `True` (porque `"" in cualquier_string` es `True`), lo que hacía que se saltaran todas las filas y la función devolviera `{}`. Removido `""` del set; el chequeo `not nivel` ya cubre filas vacías. Validado con datos reales del PDF Pacific Soul: detecta correctamente SOTANOS (7), TORRE_A (23), TORRE_B (10). Archivos: `PRODUCTOS/__init__.py` (nuevo), `PRODUCTOS/prelosas.py` (movido + fix), `extractor.py` (import actualizado).

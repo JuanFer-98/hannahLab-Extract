@@ -1,6 +1,9 @@
 from io import BytesIO
+from typing import Callable
 
 import pdfplumber
+
+import PRODUCTOS.prelosas as prelosas
 
 DISPLAY_NAMES: dict[str, list[str]] = {
     "PRELOSAS": [
@@ -67,6 +70,16 @@ DISPLAY_NAMES: dict[str, list[str]] = {
     ],
 }
 
+# Cada handler firma: (text, tables) -> dict (estructura de divisiones)
+DivisionesHandler = Callable[[str, list[list[list[str]]]], dict]
+
+PRODUCT_HANDLERS: dict[str, DivisionesHandler] = {
+    "PRELOSAS": prelosas.extract_divisiones,
+    # "PREVIGAS":  previgas.extract_divisiones,
+    # "FRISOS":    frisos.extract_divisiones,
+    # ... agrega aquí cada nuevo producto
+}
+
 
 def extract_text_and_tables(file_bytes: bytes) -> tuple[str, list[list[list[str]]]]:
     text_parts: list[str] = []
@@ -77,52 +90,21 @@ def extract_text_and_tables(file_bytes: bytes) -> tuple[str, list[list[list[str]
             for table in page.extract_tables() or []:
                 tables.append(table)
     extract = "\n".join(text_parts)
-    print(extract)
+    print(f"Total tablas extraídas: {len(tables)}")
     return extract, tables
-
-def debug_print_tables(tables_by_page: list):
-    print("\n" + "="*50)
-    print("DEBUG: IMPRIMIENDO TABLAS EXTRAÍDAS")
-    print("="*50)
-    
-    for page_num, page_tables in enumerate(tables_by_page, start=1):
-        print(f"\n--- PÁGINA {page_num} ---")
-        if not page_tables:
-            print("No se encontraron tablas en esta página.")
-            continue
-            
-        for table_idx, table in enumerate(page_tables, start=1):
-            print(f"\nTabla {table_idx}:")
-            print("-" * 30)
-            for row in table:
-                # Filtramos None para que no rompa el join y limpiamos espacios
-                clean_row = [str(cell if cell is not None else "") .strip() for cell in row]
-                print(" | ".join(clean_row))
-            print("-" * 30)
-    print("\n" + "="*50)
-
-def extract_divisiones(text: str, tables: list[list[list[str]]], producto: str) -> dict:
-    """
-    Construye el dict de divisiones para un producto.
-
-    Forma esperada (stub — se irá completando con reglas que el usuario provea):
-    {
-      "TORRE1": {
-        "CISTERNA": {"ALIGERADA 15cm": "0.00", "ALIGERADA 17cm": "0.00", ...},
-        ...
-      },
-      ...
-    }
-    """
-    return {}
 
 
 def process_pdf(file_bytes: bytes, product: str) -> dict:
+    if product not in DISPLAY_NAMES:
+        raise ValueError(f"Producto desconocido: '{product}'. Válidos: {list(DISPLAY_NAMES)}")
+
     print(f"Processing PDF for product: {product}")
     text, tables = extract_text_and_tables(file_bytes)
 
     entry: dict = {}
     if len(tables) > 1:
-        entry["Divisiones"] = extract_divisiones(text, tables, product)
+        handler = PRODUCT_HANDLERS.get(product)
+        if handler is not None:
+            entry["Divisiones"] = handler(text, tables)
 
     return {product: [entry]}

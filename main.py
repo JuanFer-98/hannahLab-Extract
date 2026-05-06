@@ -21,7 +21,9 @@ async def extract(product:  str = Form(...), file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Empty file.")
 
     try:
-        result = process_pdf(file_bytes, product) 
+        result = process_pdf(file_bytes, product)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
 
@@ -31,4 +33,4 @@ async def extract(product:  str = Form(...), file: UploadFile = File(...)):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app",host="127.0.0.1",port=8080,reload=True,reload_includes=["*.py"],reload_excludes=["venv/*", ".venv/*", "**/site-packages/*"],)
+    uvicorn.run("main:app",host="127.0.0.1",port=8081,reload=True,reload_includes=["*.py"],reload_excludes=["venv/*", ".venv/*", "**/site-packages/*"],)

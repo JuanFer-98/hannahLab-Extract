@@ -7,6 +7,7 @@ import PRODUCTOS.prelosas as prelosas
 
 DISPLAY_NAMES: dict[str, list[str]] = {
     "PRELOSAS": [
+        "Aligerada 20cm (A=8)",
         "Aligerada 1D 25cm (A=15) (T) (C=38)",
         "Aligerada 2D 25cm",
         "Maciza 25cm",
@@ -73,7 +74,7 @@ DISPLAY_NAMES: dict[str, list[str]] = {
 # Cada handler es un módulo de PRODUCTOS/ que expone:
 #   extract_divisiones(text, tables) -> dict
 #   extract_subtotales_disgregados(text, tables) -> dict[str, str]
-#   calcular_total(subtotales) -> str
+#   calcular_total(text, tables) -> str
 PRODUCT_HANDLERS: dict[str, ModuleType] = {
     "PRELOSAS": prelosas,
     # "PREVIGAS": previgas,
@@ -105,9 +106,15 @@ def process_pdf(file_bytes: bytes, product: str) -> dict:
     entry: dict = {}
     handler = PRODUCT_HANDLERS.get(product)
     if handler is not None:
-        if len(tables) > 1:
-            entry["Divisiones"] = handler.extract_divisiones(text, tables)
-        entry["subtotales_disgregados"] = handler.extract_subtotales_disgregados(text, tables)
-        entry["total"] = handler.calcular_total(entry["subtotales_disgregados"])
+        # Filtramos UNA sola vez aquí; las 3 funciones del handler asumen tablas ya filtradas.
+        tables = handler.filtrar_tablas(tables)
+        print(tables)
+        print(f"Tablas después de filtrar: {len(tables)}")
+        if tables:
+            # extract_divisiones devuelve {"GLOBAL": ...} con 1 tabla, {"Divisiones": ...} con 2+
+            entry.update(handler.extract_divisiones(text, tables))
+            entry["subtotales_disgregados"] = handler.extract_subtotales_disgregados(text, tables)
+            entry["total"] = handler.calcular_total(text, tables)
+
 
     return {product: [entry]}
